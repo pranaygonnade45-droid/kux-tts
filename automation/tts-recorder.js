@@ -80,11 +80,17 @@ console.log('');
             }
         }
         
-        await page.waitForTimeout(2500);
+        await page.waitForTimeout(3000);
         
-        // Scroll to 1.6B
-        await page.evaluate(() => window.scrollBy(0, 700));
-        await page.waitForTimeout(1500);
+        // Scroll to 1.6B section specifically
+        try {
+            const heading = page.locator('text=Kyutai TTS 1.6B').first();
+            await heading.scrollIntoViewIfNeeded();
+            await page.waitForTimeout(1000);
+        } catch {
+            await page.evaluate(() => window.scrollBy(0, 700));
+            await page.waitForTimeout(1000);
+        }
         
         // Checkbox
         if (needsShowAll) {
@@ -110,10 +116,9 @@ console.log('');
     // PROCESS SINGLE PART (on existing page)
     // ═══════════════════════════════════
     async function processPart(page, part) {
-        // Clear + fill text
-        const textareas = await page.$$('textarea');
-        const textarea = textareas[textareas.length - 1];
-        if (!textarea) throw new Error('Textarea not found!');
+        // Clear + fill text — nth(1) = 2nd textarea = 1.6B section
+        const textarea = page.locator('textarea').nth(1);
+        if (await textarea.count() === 0) throw new Error('1.6B Textarea not found!');
         
         await textarea.click();
         await textarea.evaluate(el => { 
@@ -124,14 +129,15 @@ console.log('');
         await textarea.fill(part.text);
         await page.waitForTimeout(300);
         
-        // Find Play button
-        const playButtons = await page.$$('button');
-        let playBtn = null;
-        for (const btn of playButtons) {
+        // Find Play button — 2nd Play button = 1.6B section
+        const allButtons = await page.$$('button');
+        const playBtns = [];
+        for (const btn of allButtons) {
             const text = await btn.textContent().catch(() => '');
-            if (text.trim() === 'Play') playBtn = btn;
+            if (text.trim() === 'Play') playBtns.push(btn);
         }
-        if (!playBtn) throw new Error('Play button not found!');
+        const playBtn = playBtns.length >= 2 ? playBtns[1] : playBtns[playBtns.length - 1];
+        if (!playBtn) throw new Error('1.6B Play button not found!');
         
         const playBox = await playBtn.boundingBox();
         if (!playBox) throw new Error('Play button not visible!');
@@ -188,6 +194,8 @@ console.log('');
     // ═══════════════════════════════════
     let page = null;
     let roundNum = 0;
+    let partsProcessedSinceRefresh = 0;
+    const CHUNKS_PER_REFRESH = 5;
     
     while (completed.size < parts.length) {
         roundNum++;
@@ -202,10 +210,19 @@ console.log('');
             break;
         }
         
+        // Check if we need to force a refresh (after 5 chunks)
+        if (page && partsProcessedSinceRefresh >= CHUNKS_PER_REFRESH) {
+            console.log(`\n🔄 Force refreshing page after ${CHUNKS_PER_REFRESH} parts (batch limit)...`);
+            try { await page.close(); } catch {}
+            page = null;
+            partsProcessedSinceRefresh = 0;
+        }
+
         // Setup or reuse page
         if (!page || page.isClosed()) {
             try {
                 page = await setupPage();
+                partsProcessedSinceRefresh = 0;
             } catch (e) {
                 console.log(`❌ Page setup failed: ${e.message}. Retrying in 10s...`);
                 await new Promise(r => setTimeout(r, 10000));
@@ -224,6 +241,7 @@ console.log('');
             try {
                 const result = await processPart(page, part);
                 completed.add(part.id);
+                partsProcessedSinceRefresh++;
                 console.log(`   ✅ part_${part.id}.wav (${(result.size / 1024).toFixed(1)} KB) — ${completed.size}/${parts.length} done`);
                 
                 // Small pause between parts (let page settle)
